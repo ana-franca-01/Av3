@@ -1,0 +1,38 @@
+# PostgreSQL + Redis para desenvolvimento e testes (nomes e portas próprios: roda ao lado da AV2). Funciona igual no Windows (Docker Desktop) e no Ubuntu.
+services:
+  db:
+    image: postgres:16-alpine
+    container_name: greencode-av3-db
+    environment:
+      POSTGRES_USER: greencode
+      POSTGRES_PASSWORD: greencode
+      POSTGRES_DB: greencode
+    ports:
+      - "5434:5432"
+    volumes:
+      - greencode-av3-pg:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U greencode"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  # Fila de relatórios assíncronos (BullMQ) e contadores do rate limit compartilhados entre instâncias.
+  # noeviction: o Redis nunca pode descartar jobs por falta de memória (recomendação do BullMQ).
+  redis:
+    image: redis:7-alpine
+    container_name: greencode-av3-redis
+    command: ["redis-server", "--appendonly", "yes", "--maxmemory-policy", "noeviction"]
+    ports:
+      - "6380:6379"
+    volumes:
+      - greencode-av3-redis:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+volumes:
+  greencode-av3-pg:
+  greencode-av3-redis:

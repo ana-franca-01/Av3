@@ -1,0 +1,100 @@
+# Prova contínua de compatibilidade: o mesmo código é instalado, compilado e testado em Windows e em Ubuntu 24.04.
+# Windows: PostgreSQL que já vem instalado no runner, fila em memória (o runner Windows não roda containers Linux).
+# Ubuntu 24.04: PostgreSQL 16 e Redis 7 como containers de serviço, e2e nos dois modos de fila.
+name: compatibilidade
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+env:
+  JWT_SECRET: segredo-de-ci-com-mais-de-32-caracteres-ok
+  NODE_OPTIONS: --test-reporter=spec
+
+jobs:
+  ubuntu:
+    name: Ubuntu 24.04 · Node ${{ matrix.node }}
+    runs-on: ubuntu-24.04
+    strategy:
+      matrix:
+        node: [22, 24]
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: greencode
+          POSTGRES_PASSWORD: greencode
+          POSTGRES_DB: greencode
+        ports: ['5432:5432']
+        options: --health-cmd "pg_isready -U greencode" --health-interval 5s --health-retries 10
+      redis:
+        image: redis:7-alpine
+        ports: ['6379:6379']
+        options: --health-cmd "redis-cli ping" --health-interval 5s --health-retries 10
+    env:
+      DATABASE_URL: postgresql://greencode:greencode@localhost:5432/greencode?schema=public
+      DATABASE_URL_TESTE: postgresql://greencode:greencode@localhost:5432/greencode?schema=teste
+      REDIS_URL: redis://localhost:6379
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ matrix.node }}
+          cache: npm
+      - run: npm ci
+      - run: npm test
+      - name: e2e (fila em memória)
+        run: npm run test:e2e
+      - name: e2e (BullMQ + Redis)
+        run: npm run test:e2e
+        env:
+          TESTE_COM_REDIS: '1'
+      - name: migração, seed e servidor de pé
+        run: |
+          npm run db:migrate
+          npm run db:seed
+          node dist/src/server.js &
+          for i in $(seq 1 20); do curl -fsS localhost:3000/health && break; sleep 1; done
+          curl -fsS localhost:3000/docs/json > /dev/null
+
+  windows:
+    name: Windows · Node 22
+    runs-on: windows-latest
+    env:
+      DATABASE_URL: postgresql://greencode:greencode@localhost:5432/greencode?schema=public
+      DATABASE_URL_TESTE: postgresql://greencode:greencode@localhost:5432/greencode?schema=teste
+      REDIS_URL: ''
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - name: liga o PostgreSQL do runner e cria o banco
+        shell: pwsh
+        env:
+          PGPASSWORD: root
+        run: |
+          $svc = Get-Service -Name "postgresql*"
+          Set-Service -InputObject $svc -Status running -StartupType automatic
+          & "$env:PGBIN\pg_isready.exe" -t 30
+          & "$env:PGBIN\psql.exe" -U postgres -c "CREATE USER greencode WITH PASSWORD 'greencode' SUPERUSER;"
+          & "$env:PGBIN\psql.exe" -U postgres -c "CREATE DATABASE greencode OWNER greencode;"
+      - run: npm ci
+      - run: npm test
+      - name: e2e (fila em memória)
+        run: npm run test:e2e
+      - name: migração, seed e servidor de pé
+        shell: pwsh
+        run: |
+          npm run db:migrate
+          npm run db:seed
+          $srv = Start-Process node -ArgumentList 'dist/src/server.js' -PassThru -NoNewWindow
+          $ok = $false
+          for ($i = 0; $i -lt 20 -and -not $ok; $i++) {
+            try { Invoke-RestMethod http://localhost:3000/health; $ok = $true } catch { Start-Sleep -Seconds 1 }
+          }
+          if (-not $ok) { throw 'servidor não respondeu' }
+          Invoke-RestMethod http://localhost:3000/docs/json | Out-Null
+          Stop-Process -Id $srv.Id
