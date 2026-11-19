@@ -83,7 +83,7 @@ export class FilaBullMQ implements FilaRelatorios {
   async saude(): Promise<boolean> {
     try { return (await this.conexao.ping()) === 'PONG'; } catch { return false; }
   }
-
+  //viva ao fim do semestre
   async fechar(): Promise<void> {
     // close() do worker espera os jobs em andamento terminarem (graceful shutdown)
     await this.worker?.close();
